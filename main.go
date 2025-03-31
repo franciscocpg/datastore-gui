@@ -6,6 +6,7 @@ import (
 	"flag"
 	"io/ioutil"
 	"log"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -78,29 +79,7 @@ func (l *L) Save() ([]datastore.Property, error) {
 }
 
 func GetNamespaces(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-	ctx := context.Background()
-	client, err := datastore.NewClient(ctx, *projectID)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	defer client.Close()
-
-	query := datastore.NewQuery("__namespace__").KeysOnly()
-	keys, err := client.GetAll(ctx, query, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	namespaces := make([]string, 0, len(keys))
-	for _, k := range keys {
-		if k.Name == "" {
-			namespaces = append(namespaces, "default")
-			continue
-		}
-		namespaces = append(namespaces, k.Name)
-	}
+	namespaces := []string{"default"}
 
 	res, err := json.Marshal(map[string]interface{}{"namespaces": namespaces})
 	if err != nil {
@@ -112,34 +91,7 @@ func GetNamespaces(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 }
 
 func GetKinds(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-	ctx := context.Background()
-	client, err := datastore.NewClient(ctx, *projectID)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	defer client.Close()
-
-	namespace := ps.ByName("namespace")
-	if namespace == "default" {
-		namespace = ""
-	}
-
-	query := datastore.NewQuery("__kind__").Namespace(namespace).KeysOnly()
-	keys, err := client.GetAll(ctx, query, nil)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	kinds := make([]string, 0, len(keys))
-	for _, k := range keys {
-		if k.Name == "" {
-			kinds = append(kinds, "default")
-			continue
-		}
-		kinds = append(kinds, k.Name)
-	}
+	kinds := []string{"Creci"}
 
 	res, err := json.Marshal(map[string]interface{}{"kinds": kinds})
 	if err != nil {
@@ -196,27 +148,20 @@ func GetProperties(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 		namespace = ""
 	}
 
-	query := datastore.NewQuery("__property__").KeysOnly()
-	keys, err := client.GetAll(ctx, query, nil)
+	kind := ps.ByName("kind")
+	query := datastore.NewQuery(kind).Namespace(namespace).Limit(1)
+	responseEntities = make([]map[string]interface{}, 0)
+	var l []L
+	_, err = client.GetAll(ctx, query, &l)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 
+	keys := maps.Keys(responseEntities[0])
 	properties := []string{}
-	properties = append(properties, "ID/Name")
-	for _, k := range keys {
-		if k.Parent.Name == ps.ByName("kind") {
-			name := k.Name
-			i := strings.Index(k.Name, ".")
-			if i != -1 {
-				name = name[:i]
-			}
-
-			if properties[len(properties)-1] != name {
-				properties = append(properties, name)
-			}
-		}
+	for k := range keys {
+		properties = append(properties, k)
 	}
 
 	res, err := json.Marshal(map[string]interface{}{"properties": properties})
