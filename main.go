@@ -19,12 +19,16 @@ var (
 	port             = flag.String("port", "", "PORT")
 	projectID        = flag.String("projectID", "", "PROJECT_ID")
 	dsHost           = flag.String("dsHost", "", "DATASTORE_EMULATOR_HOST")
+	entities         = flag.String("entities", "", "ENTITIES")
 	responseEntities = []map[string]interface{}{}
 	loadEntity       = map[string]interface{}{}
+	isFirestore      = false
 )
 
 func main() {
 	flag.Parse()
+	isFirestore = *entities != ""
+
 	router := httprouter.New()
 	router.GET("/namespaces", GetNamespaces)
 	router.GET("/namespace/:namespace", GetKinds)
@@ -34,7 +38,7 @@ func main() {
 	router.GET("/", Index)
 	router.ServeFiles("/index/*filepath", http.Dir("./client/dist"))
 
-	log.Printf("start: PORT=%s, PROJECT_ID=%s, DATASTORE_EMULATOR_HOST=%s", *port, *projectID, *dsHost)
+	log.Printf("start: PORT=%s, PROJECT_ID=%s, DATASTORE_EMULATOR_HOST=%s, ENTITIES=%s", *port, *projectID, *dsHost, *entities)
 	log.Fatal(http.ListenAndServe(":"+*port, router))
 }
 
@@ -81,6 +85,32 @@ func (l *L) Save() ([]datastore.Property, error) {
 func GetNamespaces(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 	namespaces := []string{"default"}
 
+	if !isFirestore {
+		ctx := context.Background()
+		client, err := datastore.NewClient(ctx, *projectID)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		defer client.Close()
+
+		query := datastore.NewQuery("__namespace__").KeysOnly()
+		keys, err := client.GetAll(ctx, query, nil)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		namespaces = make([]string, 0, len(keys))
+		for _, k := range keys {
+			if k.Name == "" {
+				namespaces = append(namespaces, "default")
+				continue
+			}
+			namespaces = append(namespaces, k.Name)
+		}
+	}
+
 	res, err := json.Marshal(map[string]interface{}{"namespaces": namespaces})
 	if err != nil {
 		log.Println(err)
@@ -91,7 +121,41 @@ func GetNamespaces(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 }
 
 func GetKinds(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-	kinds := []string{"Creci"}
+	var kinds []string
+
+	if isFirestore {
+		kinds = strings.Split(*entities, ",")
+	} else {
+
+		ctx := context.Background()
+		client, err := datastore.NewClient(ctx, *projectID)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		defer client.Close()
+
+		namespace := ps.ByName("namespace")
+		if namespace == "default" {
+			namespace = ""
+		}
+
+		query := datastore.NewQuery("__kind__").Namespace(namespace).KeysOnly()
+		keys, err := client.GetAll(ctx, query, nil)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		kinds = make([]string, 0, len(keys))
+		for _, k := range keys {
+			if k.Name == "" {
+				kinds = append(kinds, "default")
+				continue
+			}
+			kinds = append(kinds, k.Name)
+		}
+	}
 
 	res, err := json.Marshal(map[string]interface{}{"kinds": kinds})
 	if err != nil {
@@ -148,20 +212,45 @@ func GetProperties(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 		namespace = ""
 	}
 
-	kind := ps.ByName("kind")
-	query := datastore.NewQuery(kind).Namespace(namespace).Limit(1)
-	responseEntities = make([]map[string]interface{}, 0)
-	var l []L
-	_, err = client.GetAll(ctx, query, &l)
-	if err != nil {
-		log.Println(err)
-		return
-	}
+	properties := []string{"ID/Name"}
+	if isFirestore {
+		kind := ps.ByName("kind")
+		query := datastore.NewQuery(kind).Namespace(namespace).Limit(1)
+		responseEntities = make([]map[string]interface{}, 0)
+		var l []L
+		_, err = client.GetAll(ctx, query, &l)
+		if err != nil {
+			log.Println(err)
+			return
+		}
 
-	keys := maps.Keys(responseEntities[0])
-	properties := []string{}
-	for k := range keys {
-		properties = append(properties, k)
+		keys := maps.Keys(responseEntities[0])
+		for k := range keys {
+			if k != "ID/Name" {
+				properties = append(properties, k)
+			}
+		}
+	} else {
+		query := datastore.NewQuery("__property__").KeysOnly()
+		keys, err := client.GetAll(ctx, query, nil)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		for _, k := range keys {
+			if k.Parent.Name == ps.ByName("kind") {
+				name := k.Name
+				i := strings.Index(k.Name, ".")
+				if i != -1 {
+					name = name[:i]
+				}
+
+				if properties[len(properties)-1] != name {
+					properties = append(properties, name)
+				}
+			}
+		}
 	}
 
 	res, err := json.Marshal(map[string]interface{}{"properties": properties})
