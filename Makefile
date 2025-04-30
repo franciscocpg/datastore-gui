@@ -15,7 +15,7 @@ dev: $(gow)
 # It builds the docker image
 .PHONY: docker-build
 docker-build:
-	@docker build -t $(IMAGE_NAME) . --platform=linux
+	@docker build -t $(IMAGE_NAME) . --platform=linux/amd64,linux/arm64
 
 # It pushes the docker image to the registry
 .PHONY: docker-push
