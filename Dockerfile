@@ -1,7 +1,9 @@
-FROM golang:1.24 AS go
+FROM --platform=$BUILDPLATFORM golang:1.24 AS go
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /go/src/app
 COPY . /go/src/app
-RUN go build -o /go/bin/app
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /go/bin/app
 
 FROM node:20-slim
 COPY --from=go /go/bin/app /

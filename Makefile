@@ -1,4 +1,3 @@
-PLATFORM ?= linux
 export GOBIN := $(PWD)/$(BIN_FOLDER)
 SHA_COMMIT := $(shell git rev-parse --short HEAD)
 IMAGE_NAME := franciscocpg/datastore-gui:$(SHA_COMMIT)
@@ -13,12 +12,13 @@ $(gow):
 dev: $(gow)
 	@$(gow) -c -v run main.go -port=$(PORT) -projectID=$(PROJECT_ID) -dsHost=$(DATASTORE_EMULATOR_HOST) -entities=$(ENTITIES)
 
-# It builds the docker image
-.PHONY: docker-build
-docker-build:
-	@docker build -t $(IMAGE_NAME) . --platform=$(PLATFORM)
+# It enables multi-platform buildx
+.PHONY: enable-multi-platform
+enable-multi-platform:
+	@docker buildx create --name container-builder --driver docker-container --bootstrap --use
 
-# It pushes the docker image to the registry
-.PHONY: docker-push
-docker-push:
-	@docker push --platform=$(PLATFORM) $(IMAGE_NAME)
+# It builds and push the docker image for multi-platform
+# You need to run "make enable-multi-platform" at least once for the docker buildx to work with multi platform:
+.PHONY: docker-build-push-multi-platform
+docker-build-push-multi-platform:
+	@docker buildx build -t $(IMAGE_NAME) . --platform linux/amd64,linux/arm64 --push
