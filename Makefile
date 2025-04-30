@@ -1,3 +1,4 @@
+PLATFORM ?= linux
 export GOBIN := $(PWD)/$(BIN_FOLDER)
 SHA_COMMIT := $(shell git rev-parse --short HEAD)
 IMAGE_NAME := franciscocpg/datastore-gui:$(SHA_COMMIT)
@@ -15,9 +16,9 @@ dev: $(gow)
 # It builds the docker image
 .PHONY: docker-build
 docker-build:
-	@docker build -t $(IMAGE_NAME) . --platform=linux/amd64,linux/arm64
+	@docker build -t $(IMAGE_NAME) . --platform=$(PLATFORM)
 
 # It pushes the docker image to the registry
 .PHONY: docker-push
 docker-push:
-	@docker push $(IMAGE_NAME)
+	@docker push --platform=$(PLATFORM) $(IMAGE_NAME)
