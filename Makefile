@@ -7,9 +7,14 @@ gow := $(GOBIN)/gow
 $(gow):
 	@go install -v github.com/mitranim/gow@87df6e4
 
+# It builds the client
+.PHONY: build-client
+build-client:
+	@cd client && yarn install && node build.ts
+
 # It runs the server locally in watch mode
 .PHONY: dev
-dev: $(gow)
+dev: $(gow) build-client
 	@$(gow) -c -v run main.go -port=$(PORT) -projectID=$(PROJECT_ID) -dsHost=$(DATASTORE_EMULATOR_HOST) -entities=$(ENTITIES)
 
 # It enables multi-platform buildx

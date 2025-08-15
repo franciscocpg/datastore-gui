@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"io/ioutil"
+	"io"
 	"log"
 	"maps"
 	"net/http"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,13 +18,11 @@ import (
 )
 
 var (
-	port             = flag.String("port", "", "PORT")
-	projectID        = flag.String("projectID", "", "PROJECT_ID")
-	dsHost           = flag.String("dsHost", "", "DATASTORE_EMULATOR_HOST")
-	entities         = flag.String("entities", "", "ENTITIES")
-	responseEntities = []map[string]interface{}{}
-	loadEntity       = map[string]interface{}{}
-	isFirestore      = false
+	port        = flag.String("port", "", "PORT")
+	projectID   = flag.String("projectID", "", "PROJECT_ID")
+	dsHost      = flag.String("dsHost", "", "DATASTORE_EMULATOR_HOST")
+	entities    = flag.String("entities", "", "ENTITIES")
+	isFirestore = false
 )
 
 func main() {
@@ -43,25 +43,32 @@ func main() {
 }
 
 func Index(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	http.Redirect(w, r, "/index", 301)
+	http.Redirect(w, r, "/index", http.StatusMovedPermanently)
 }
 
-type L struct{}
+type L struct {
+	loadEntity       map[string]any
+	responseEntities []map[string]any
+}
 
 func (l *L) Load(pl []datastore.Property) error {
-	loadEntity = load(pl, loadEntity)
-	responseEntities = append(responseEntities, loadEntity)
+	l.loadEntity = load(pl, l.loadEntity)
+	if !slices.ContainsFunc(l.responseEntities, func(e map[string]any) bool {
+		return e["ID/Name"] == l.loadEntity["ID/Name"]
+	}) {
+		l.responseEntities = append(l.responseEntities, l.loadEntity)
+	}
 
 	return nil
 }
 
-func load(pl []datastore.Property, dst map[string]interface{}) map[string]interface{} {
+func load(pl []datastore.Property, dst map[string]any) map[string]any {
 	for _, p := range pl {
 		switch v := p.Value.(type) {
 		case *datastore.Key:
 			dst[p.Name] = v.String()
 		case *datastore.Entity:
-			l := make(map[string]interface{}, 0)
+			l := make(map[string]any, 0)
 			dst[p.Name] = load(v.Properties, l)
 		default:
 			dst[p.Name] = p.Value
@@ -72,8 +79,8 @@ func load(pl []datastore.Property, dst map[string]interface{}) map[string]interf
 }
 
 func (l *L) LoadKey(k *datastore.Key) error {
-	loadEntity = make(map[string]interface{}, 0)
-	loadEntity["ID/Name"] = k.String()
+	l.loadEntity = make(map[string]any, 0)
+	l.loadEntity["ID/Name"] = k.String()
 
 	return nil
 }
@@ -111,7 +118,7 @@ func GetNamespaces(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 		}
 	}
 
-	res, err := json.Marshal(map[string]interface{}{"namespaces": namespaces})
+	res, err := json.Marshal(map[string]any{"namespaces": namespaces})
 	if err != nil {
 		log.Println(err)
 		return
@@ -126,7 +133,6 @@ func GetKinds(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 	if isFirestore {
 		kinds = strings.Split(*entities, ",")
 	} else {
-
 		ctx := context.Background()
 		client, err := datastore.NewClient(ctx, *projectID)
 		if err != nil {
@@ -157,7 +163,7 @@ func GetKinds(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 		}
 	}
 
-	res, err := json.Marshal(map[string]interface{}{"kinds": kinds})
+	res, err := json.Marshal(map[string]any{"kinds": kinds})
 	if err != nil {
 		log.Println(err)
 		return
@@ -180,16 +186,21 @@ func GetEntities(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 		namespace = ""
 	}
 
-	responseEntities = make([]map[string]interface{}, 0)
 	var l []L
-	query := datastore.NewQuery(ps.ByName("kind")).Namespace(namespace)
+	query := datastore.NewQuery(ps.ByName("kind")).Namespace(namespace).Order("__key__")
 	_, err = client.GetAll(ctx, query, &l)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 
-	res, err := json.Marshal(map[string]interface{}{"entities": responseEntities})
+	// Collect all entities from all L instances
+	var allEntities []map[string]any
+	for _, loader := range l {
+		allEntities = append(allEntities, loader.responseEntities...)
+	}
+
+	res, err := json.Marshal(map[string]any{"entities": allEntities})
 	if err != nil {
 		log.Println(err)
 		return
@@ -216,7 +227,6 @@ func GetProperties(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 	if isFirestore {
 		kind := ps.ByName("kind")
 		query := datastore.NewQuery(kind).Namespace(namespace).Limit(1)
-		responseEntities = make([]map[string]interface{}, 0)
 		var l []L
 		_, err = client.GetAll(ctx, query, &l)
 		if err != nil {
@@ -224,10 +234,18 @@ func GetProperties(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 			return
 		}
 
-		keys := maps.Keys(responseEntities[0])
-		for k := range keys {
-			if k != "ID/Name" {
-				properties = append(properties, k)
+		// Collect all entities from all L instances
+		var allEntities []map[string]any
+		for _, loader := range l {
+			allEntities = append(allEntities, loader.responseEntities...)
+		}
+
+		if len(allEntities) > 0 {
+			keys := maps.Keys(allEntities[0])
+			for k := range keys {
+				if k != "ID/Name" {
+					properties = append(properties, k)
+				}
 			}
 		}
 	} else {
@@ -252,8 +270,14 @@ func GetProperties(w http.ResponseWriter, r *http.Request, ps httprouter.Params)
 			}
 		}
 	}
+	sortedProperties := []string{properties[0]}
+	if len(properties) > 1 {
+		otherProps := properties[1:]
+		sort.Strings(otherProps)
+		sortedProperties = append(sortedProperties, otherProps...)
+	}
 
-	res, err := json.Marshal(map[string]interface{}{"properties": properties})
+	res, err := json.Marshal(map[string]any{"properties": sortedProperties})
 	if err != nil {
 		log.Println(err)
 		return
@@ -275,7 +299,7 @@ func DeleteEntities(w http.ResponseWriter, r *http.Request, ps httprouter.Params
 		namespace = ""
 	}
 
-	body, err := ioutil.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Println(err)
 		return
@@ -294,34 +318,28 @@ func DeleteEntities(w http.ResponseWriter, r *http.Request, ps httprouter.Params
 		var key *datastore.Key
 		for i, k := range ks {
 			kindKeyValue := strings.Split(k, ",")
-			id, err := strconv.ParseInt(kindKeyValue[1], 10, 64)
-			if err != nil {
-				log.Println(err)
-				return
-			}
+			idStr := kindKeyValue[1]
+			id, err := strconv.ParseInt(idStr, 10, 64)
+			isInt := err == nil
 
 			var name string
 			if id == 0 {
-				name = kindKeyValue[1]
+				name = idStr
 			}
 			kind := kindKeyValue[0]
 
 			if i == 0 {
-				if name != "" {
-					key = datastore.NameKey(kind, name, nil)
-				} else {
-					key = datastore.IDKey(kind, id, nil)
+				keys = append(keys, datastore.NameKey(kind, idStr, nil))
+				if isInt {
+					keys = append(keys, datastore.IDKey(kind, id, nil))
 				}
 			} else {
-				if name != "" {
-					key = datastore.NameKey(kind, name, key)
-				} else {
-					key = datastore.IDKey(kind, id, key)
+				keys = append(keys, datastore.NameKey(kind, name, nil))
+				if isInt {
+					keys = append(keys, datastore.IDKey(kind, id, key))
 				}
 			}
 		}
-
-		keys = append(keys, key)
 	}
 
 	err = client.DeleteMulti(ctx, keys)
