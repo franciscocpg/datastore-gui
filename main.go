@@ -342,10 +342,12 @@ func DeleteEntities(w http.ResponseWriter, r *http.Request, ps httprouter.Params
 		}
 	}
 
-	err = client.DeleteMulti(ctx, keys)
-	if err != nil {
-		log.Println(err)
-		return
+	for _, k := range keys {
+		err = client.Delete(ctx, k)
+		if err != nil {
+			log.Println(err)
+			return
+		}
 	}
 
 	log.Println("delete:", keys)
